@@ -1,4 +1,4 @@
-This repository contains code for the ACL 2017 paper *[Get To The Point: Summarization with Pointer-Generator Networks](https://arxiv.org/abs/1704.04368)*. 
+This repository contains code for the ACL 2017 paper *[Get To The Point: Summarization with Pointer-Generator Networks](https://arxiv.org/abs/1704.04368)*.
 
 ## Looking for test set output?
 The test set output of the models described in the paper can be found [here](https://drive.google.com/file/d/0B7pQmm-OfDv7MEtMVU5sOHc5LTg/view?usp=sharing).
@@ -36,7 +36,7 @@ python run_summarization.py --mode=train --data_path=/path/to/chunked/train_* --
 
 This will create a subdirectory of your specified `log_root` called `myexperiment` where all checkpoints and other data will be saved. Then the model will start training using the `train_*.bin` files as training data.
 
-**Warning**: Using default settings as in the above command, both initializing the model and running training iterations will probably be quite slow. To make things faster, try setting the following flags (especially `max_enc_steps` and `max_dec_steps`) to something smaller than the defaults specified in `run_summarization.py`: `hidden_dim`, `emb_dim`, `batch_size`, `max_enc_steps`, `max_dec_steps`, `vocab_size`. 
+**Warning**: Using default settings as in the above command, both initializing the model and running training iterations will probably be quite slow. To make things faster, try setting the following flags (especially `max_enc_steps` and `max_dec_steps`) to something smaller than the defaults specified in `run_summarization.py`: `hidden_dim`, `emb_dim`, `batch_size`, `max_enc_steps`, `max_dec_steps`, `vocab_size`.
 
 **Increasing sequence length during training**: Note that to obtain the results described in the paper, we increase the values of `max_enc_steps` and `max_dec_steps` in stages throughout training (mostly so we can perform quicker iterations during early stages of training). If you wish to do the same, start with small values of `max_enc_steps` and `max_dec_steps`, then interrupt and restart the job with larger values when you want to increase them.
 
@@ -65,6 +65,19 @@ This will repeatedly load random examples from your specified datafile and gener
 **Visualize your output**: Additionally, the decode job produces a file called `attn_vis_data.json`. This file provides the data necessary for an in-browser visualization tool that allows you to view the attention distributions projected onto the text. To use the visualizer, follow the instructions [here](https://github.com/abisee/attn_vis).
 
 If you want to run evaluation on the entire validation or test set and get ROUGE scores, set the flag `single_pass=1`. This will go through the entire dataset in order, writing the generated summaries to file, and then run evaluation using [pyrouge](https://pypi.python.org/pypi/pyrouge). (Note this will *not* produce the `attn_vis_data.json` files for the attention visualizer).
+
+### Summarize your own texts
+For example, you have some documents `some/folder/*/article.txt`. The first step is to tokenize them and pack them into a binary file that can be read by Tensorflow. To do this, run:
+```
+python make_data.py "some/folder/*/article.txt" my_data
+```
+When you run `python run_summarization.py --mode=decode --single_pass=1`, the `data_path` should point to `my_data/test.bin`. The `vocab_path`, however, should point to the vocabulary file of your *training* data (such as the CNN / Daily Mail dataset).
+
+The resulting summaries will be named by only numbers, making it difficult to associate them with the originals. You can use
+```
+python put_back_summaries.py path/to/pretrained_model/decode_test_.../decoded/ "some/folder/*"
+```
+to send the untokenized summaries back to the same directories as their originals.
 
 ### Evaluate with ROUGE
 `decode.py` uses the Python package [`pyrouge`](https://pypi.python.org/pypi/pyrouge) to run ROUGE evaluation. `pyrouge` provides an easier-to-use interface for the official Perl ROUGE package, which you must install for `pyrouge` to work. Here are some useful instructions on how to do this:
