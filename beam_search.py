@@ -19,13 +19,14 @@
 import tensorflow as tf
 import numpy as np
 import data
+import re
 
 FLAGS = tf.app.flags.FLAGS
 
 class Hypothesis(object):
   """Class to represent a hypothesis during beam search. Holds all the information needed for the hypothesis."""
 
-  def __init__(self, tokens, log_probs, state, attn_dists, p_gens, coverage):
+  def __init__(self, tokens, log_probs, state, attn_dists, p_gens, coverage, num_puncts):
     """Hypothesis constructor.
 
     Args:
@@ -35,6 +36,7 @@ class Hypothesis(object):
       attn_dists: List, same length as tokens, of numpy arrays with shape (attn_length). These are the attention distributions so far.
       p_gens: List, same length as tokens, of floats, or None if not using pointer-generator model. The values of the generation probability so far.
       coverage: Numpy array of shape (attn_length), or None if not using coverage. The current coverage vector.
+      num_puncts: Int, number of punctuations among tokens.
     """
     self.tokens = tokens
     self.log_probs = log_probs
@@ -42,8 +44,9 @@ class Hypothesis(object):
     self.attn_dists = attn_dists
     self.p_gens = p_gens
     self.coverage = coverage
+    self.num_puncts = num_puncts
 
-  def extend(self, token, log_prob, state, attn_dist, p_gen, coverage):
+  def extend(self, token, log_prob, state, attn_dist, p_gen, coverage, is_punct):
     """Return a NEW hypothesis, extended with the information from the latest step of beam search.
 
     Args:
@@ -53,6 +56,7 @@ class Hypothesis(object):
       attn_dist: Attention distribution from latest step. Numpy array shape (attn_length).
       p_gen: Generation probability on latest step. Float.
       coverage: Latest coverage vector. Numpy array shape (attn_length), or None if not using coverage.
+      is_punct: Boolean. Whether the new token is a punctuation.
     Returns:
       New Hypothesis for next step.
     """
@@ -61,7 +65,8 @@ class Hypothesis(object):
                       state = state,
                       attn_dists = self.attn_dists + [attn_dist],
                       p_gens = self.p_gens + [p_gen],
-                      coverage = coverage)
+                      coverage = coverage,
+                      num_puncts = self.num_puncts + 1 if is_punct else self.num_puncts)
 
   @property
   def latest_token(self):
@@ -101,12 +106,17 @@ def run_beam_search(sess, model, vocab, batch):
                      state=dec_in_state,
                      attn_dists=[],
                      p_gens=[],
-                     coverage=np.zeros([batch.enc_batch.shape[1]]) # zero vector of length attention_length
+                     coverage=np.zeros([batch.enc_batch.shape[1]]), # zero vector of length attention_length
+                     num_puncts=0
                      ) for _ in range(FLAGS.beam_size)]
   results = [] # this will contain finished hypotheses (those that have emitted the [STOP] token)
+  word_detector = re.compile('\w')
 
   steps = 0
-  while steps < FLAGS.max_dec_steps and len(results) < FLAGS.beam_size:
+  while hyps and steps < int(FLAGS.max_dec_steps * 1.5) and len(results) < FLAGS.beam_size:
+    while len(hyps) < FLAGS.beam_size:  # insufficient number of hyps for the fixed-size tensor
+      hyps.append(hyps[-1])
+    
     latest_tokens = [h.latest_token for h in hyps] # latest token produced by each hypothesis
     latest_tokens = [t if t in range(vocab.size()) else vocab.word2id(data.UNKNOWN_TOKEN) for t in latest_tokens] # change any in-article temporary OOV ids to [UNK] id, so that we can lookup word embeddings
     states = [h.state for h in hyps] # list of current decoder states of the hypotheses
@@ -127,22 +137,29 @@ def run_beam_search(sess, model, vocab, batch):
       h, new_state, attn_dist, p_gen, new_coverage_i = hyps[i], new_states[i], attn_dists[i], p_gens[i], new_coverage[i]  # take the ith hypothesis and new decoder state info
       for j in range(FLAGS.beam_size * 2):  # for each of the top 2*beam_size hyps:
         # Extend the ith hypothesis with the jth option
-        new_hyp = h.extend(token=topk_ids[i, j],
+        token = topk_ids[i, j]
+        try:
+          token_str = vocab.id2word(token)
+          is_punct = word_detector.search(token_str) is None
+        except ValueError as e:  # OOV word
+          is_punct = False
+        new_hyp = h.extend(token=token,
                            log_prob=topk_log_probs[i, j],
                            state=new_state,
                            attn_dist=attn_dist,
                            p_gen=p_gen,
-                           coverage=new_coverage_i)
+                           coverage=new_coverage_i,
+                           is_punct=is_punct)
         all_hyps.append(new_hyp)
 
     # Filter and collect any hypotheses that have produced the end token.
     hyps = [] # will contain hypotheses for the next step
     for h in sort_hyps(all_hyps): # in order of most likely h
+      smr_length = steps - h.num_puncts  # +1 for the actual num of tokens and -1 for [STOP] cancelled out
       if h.latest_token == vocab.word2id(data.STOP_DECODING): # if stop token is reached...
-        # If this hypothesis is sufficiently long, put in results. Otherwise discard.
-        if steps >= FLAGS.min_dec_steps:
+        if FLAGS.min_dec_steps <= smr_length <= FLAGS.max_dec_steps:
           results.append(h)
-      else: # hasn't reached stop token, so continue to extend this hypothesis
+      elif smr_length < FLAGS.max_dec_steps: # hasn't reached stop token, so continue to extend this hypothesis
         hyps.append(h)
       if len(hyps) == FLAGS.beam_size or len(results) == FLAGS.beam_size:
         # Once we've collected beam_size-many hypotheses for the next step, or beam_size-many complete hypotheses, stop.
